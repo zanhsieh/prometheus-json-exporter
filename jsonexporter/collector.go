@@ -2,16 +2,21 @@ package jsonexporter
 
 import (
 	"fmt"
-	log "github.com/Sirupsen/logrus"
-	"github.com/kawamuray/jsonpath" // Originally: "github.com/NickSardo/jsonpath"
-	"github.com/kawamuray/prometheus-exporter-harness/harness"
 	"io/ioutil"
 	"net/http"
+
+	log "github.com/Sirupsen/logrus"
+	"github.com/docker/engine-api/client"
+	"github.com/docker/engine-api/types"
+	"github.com/kawamuray/jsonpath" // Originally: "github.com/NickSardo/jsonpath"
+	"github.com/kawamuray/prometheus-exporter-harness/harness"
+	"golang.org/x/net/context"
 )
 
 type Collector struct {
-	Endpoint string
-	scrapers []JsonScraper
+	SocketPath  string
+	ContainerId string
+	scrapers    []JsonScraper
 }
 
 func compilePath(path string) (*jsonpath.Path, error) {
@@ -44,25 +49,34 @@ func compilePaths(paths map[string]string) (map[string]*jsonpath.Path, error) {
 	return compiledPaths, nil
 }
 
-func NewCollector(endpoint string, scrapers []JsonScraper) *Collector {
+func NewCollector(socketPath, containerId string, scrapers []JsonScraper) *Collector {
 	return &Collector{
-		Endpoint: endpoint,
-		scrapers: scrapers,
+		SocketPath:  socketPath,
+		ContainerId: containerId,
+		scrapers:    scrapers,
 	}
 }
 
 func (col *Collector) fetchJson() ([]byte, error) {
-	resp, err := http.Get(col.Endpoint)
+	defaultHeaders := map[string]string{"User-Agent": "engine-api-cli-1.0"}
+	cli, err := client.NewClient(col.SocketPath, "v1.22", nil, defaultHeaders)
 	if err != nil {
-		return nil, fmt.Errorf("failed to fetch json from endpoint;endpoint:<%s>,err:<%s>", col.Endpoint, err)
-	}
-	defer resp.Body.Close()
-
-	data, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read response body;err:<%s>", err)
+		return nil, fmt.Errorf("failed on connecting docker socket;socketPath:<%s>,err:<%s>", col.SocketPath, err)
 	}
 
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	reader, err := cli.ContainerLogs(ctx, containerId, types.ContainerLogsOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("failed on getting container log;container_id:<%s>,err:<%s>", containerId, err)
+	}
+	defer reader.Close()
+
+	data, err := ioutil.ReadAll(reader)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read log;err:<%s>", err)
+	}
 	return data, nil
 }
 
